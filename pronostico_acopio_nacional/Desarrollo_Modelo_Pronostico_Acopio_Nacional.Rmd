@@ -1,0 +1,217 @@
+---
+title: "Modelo Predictivo Acopio Formal Leche"
+output: html_notebook
+---
+# Setup Librerias y Directorio
+```{r, setup, include = FALSE}
+knitr::opts_knit$set(root.dir = "G:/Mi unidad/casos_uso_analitica/fomento_ganadero/pronostico_leche_cruda")
+```
+```{r}
+library(tidyverse)
+library(lubridate)
+library(timetk)
+library(tidymodels)
+library(modeltime)
+library(DBI)
+library(RSQLite)
+library(doParallel)
+library(finetune)
+```
+
+
+# Importar Datos
+## Datos Acopio
+```{r}
+config <- configr::read.config(file = "config/config.json")
+
+con <- dbConnect(drv = SQLite(),paste0(config$config_base$directorio_aplicacion, 
+                                       config$config_base$directorio_basedatos,
+                                       config$config_base$base_datos))
+
+
+nacional_acopio_leche <- 
+  dbReadTable(conn = con, name = "recoleccion_nacional_leche") %>% 
+  mutate(fecha = as.Date(fecha),
+         anio = lubridate::year(fecha),
+         mes = lubridate::month(fecha))
+dbDisconnect(con)
+rm(con)
+```
+
+## Agrupa Datos Acopio Formal Nacional
+```{r}
+acopio_formal <- 
+nacional_acopio_leche %>% 
+  dplyr::filter(fecha >= as.Date("2010-01-01") ) %>% 
+  group_by(fecha) %>% 
+  summarise(precio_promedio_acopio_formal = weighted.mean(x = precio, w = volumen_recoleccion),
+            litros_acopio_formal = sum(volumen_recoleccion)) %>% 
+  ungroup()
+```
+
+# Modelo predicción Acopio Leche
+## Particionar datos (Entrenamiento y prueba)
+### Datos 2020-2022 (Datos clima y Acopio Nacional):
+```{r}
+datos_2010_2022 <- 
+  acopio_formal  
+
+split_2010_2022 <-time_series_split(data = datos_2010_2022, 
+                                    date_var = fecha, 
+                                    assess = "6 months", 
+                                    cumulative = TRUE)
+
+train_data_2010_2022 <- training(x = split_2010_2022)
+
+```
+
+```{r}
+split_2010_2022 %>% 
+  tk_time_series_cv_plan() %>% 
+  plot_time_series_cv_plan(.date_var = fecha, .value = litros_acopio_formal,.interactive = FALSE )
+```
+
+## "Receta" del modelo
+
+```{r}
+receta_optima <- 
+  recipe(
+  litros_acopio_formal ~ 
+    fecha,
+  data = train_data_2010_2022) %>% 
+  step_fourier(fecha, period = c(365, 365/2, 365/4), K = 3)
+
+
+receta_optima <-
+  receta_optima %>%
+  step_rm(fecha_sin91.25_K3,
+          fecha_sin91.25_K2,
+          fecha_sin91.25_K1,
+          fecha_cos91.25_K1,
+          fecha_cos182.5_K2,
+          fecha_sin182.5_K2)
+```
+```{r}
+datos_receta <- 
+  receta_optima%>% 
+  prep() %>% 
+  bake(datos_2010_2022) 
+
+```
+```{r}
+mat_correlacion <- 
+  cor(x = datos_receta$litros_acopio_formal,
+    y=datos_receta %>% select(-fecha, -litros_acopio_formal) %>% as.matrix(),use = "pair") %>% 
+  t() %>% as_tibble(rownames="variable") %>% 
+  arrange(V1)
+
+variables_correlacionadas <- mat_correlacion %>% dplyr::filter(abs(V1)>=0.3)
+
+grafica_variables_correlacionadas <- variables_correlacionadas %>% 
+  ggplot(aes(y=reorder(variable, V1), x=V1))+
+  geom_col(fill="cornsilk", color ="gray")+
+  geom_text(aes(x=V1/2, label=paste(round(V1*100,1), "%")), size=3)+
+  scale_x_continuous(name = "correlacion", breaks = seq(from=-1, to = 1, by = 0.1))+
+  scale_y_discrete(name="Variable")+
+  ggtitle("Variables Correlacionadas con Acopio Formal de Leche")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 10))
+
+print(grafica_variables_correlacionadas)
+```
+
+## Especificacion Modelos
+### Modelos Prophet
+```{r}
+model_spect_prophet <- 
+  prophet_boost() %>%
+  set_engine("prophet_xgboost")
+
+workflow_fit_prophet_boost <- 
+  workflow() %>%
+  add_model(model_spect_prophet) 
+```
+
+```{r}
+workflow_optimo <- 
+  workflow_fit_prophet_boost %>% 
+  add_recipe(receta_optima) 
+```
+```{r}
+
+prophet_optima <- 
+  workflow_optimo %>%
+  fit(train_data_2010_2022)
+```
+
+
+```{r}
+tabla_modelos <- modeltime_table(prophet_optima)
+```
+```{r}
+calibration_table <- tabla_modelos %>% modeltime_calibrate(new_data = testing(split_2010_2022))
+```
+
+```{r}
+grafica_pronostico_offsample <- 
+calibration_table %>%
+  modeltime_forecast(new_data = testing(split_2010_2022), actual_data =  datos_2010_2022) %>%
+  dplyr::filter(.index >= as.Date("2020-05-01")) %>% 
+  plot_modeltime_forecast(.interactive = FALSE,.title = "Acopio Formal Nacional Pronóstico Of-Sample")+
+  geom_point()+
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y-%b")+
+  scale_y_continuous(name = "Millones de Litros", 
+                     labels = scales::label_comma(scale = 1/1000000),
+                     limits = c(0, 400000000))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+print(grafica_pronostico_offsample)
+
+```
+
+
+```{r}
+calibration_table %>% 
+  modeltime_accuracy() %>% 
+  table_modeltime_accuracy(.interactive = FALSE)
+```
+```{r}
+grafica_error_ofsample <- calibration_table %>%
+  modeltime_forecast(new_data = testing(split_2010_2022), actual_data =  datos_2010_2022) %>%
+  dplyr::filter(.index >= as.Date("2022-05-01")) %>% 
+  pivot_wider(id_cols = .index, names_from = .model_desc, values_from = .value) %>% 
+  mutate(error_prc = `PROPHET W/ XGBOOST ERRORS`/ACTUAL -1) %>% 
+  ggplot(aes(x=.index, y = error_prc))+
+  geom_col(fill="cornsilk", color = "gray")+
+  geom_hline(yintercept = 0, color = "black")+
+  geom_text(aes(label= paste0(round(100*error_prc, 2), "%")), size = 3)+
+  scale_y_continuous(name = "Error Porcentual",labels = scales::label_percent(), limits = c(-0.05, 0.05))+
+  scale_x_date(name = "Mes Pronóstico", date_breaks = "1 month", date_labels = "%Y-%b")+
+  ggtitle(label ="Acopio Formal Nacional Pronóstico Of-Sample", subtitle = "Error pronóstico")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.border = element_blank())
+```
+
+```{r}
+print(grafica_error_ofsample)
+```
+
+
+
+```{r}
+modelo_optimo <- 
+  tabla_modelos %>% 
+  modeltime_refit(datos_2010_2022)
+```
+# Guardar modelo
+```{r}
+saveRDS(object = modelo_optimo, 
+        file = paste0(
+  config$config_base$directorio_aplicacion,
+  config$modelos_pronostico$directorio_modelos, 
+  config$modelos_pronostico$modelo_mensual))
+```
+

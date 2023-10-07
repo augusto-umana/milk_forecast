@@ -1,0 +1,23 @@
+{"config_base":{
+  "directorio_aplicacion": "D:/projects/milk_forecast",
+  "directorio_basedatos":  "/data/",
+  "directorio_codigo_pronostico": "code/pronostico_acopio_nacional/",
+  "base_datos": "db_datos_modelos.db",
+  "funciones_pronostico": "funciones_pronostico.R"
+  },
+  
+  "config_reporte_ministerio":{
+    "directorio_reportes": "data/raw/datos_minagricultura/tmp_reportes/",
+    "archivo_nombre_departamentos": "config/nombre_departamentos_reporte_Min_Agricultura.xlsx",
+    "url_reporte_volumen": "https://minagriculturaco-my.sharepoint.com/:x:/g/personal/leche_minagricultura_gov_co/EUm0vtDKLmpBlqKQDYwYQvoB18dyvsLxg5GReL3OYNfMqg?e=ID6grc",
+    "nombre_archivo_volumen":"volumen_acopio_total_res_0017_2012..",
+    "url_reporte_precio":"https://minagriculturaco-my.sharepoint.com/:x:/g/personal/leche_minagricultura_gov_co/Eavb9KUql65DjmFUnflfLt8BgSD053byh5bUySK5yIHUhg?e=GBz5Ph",
+    "nombre_archivo_precio":"precio_pagado_productor_2_res_0017_2012.."
+  },
+  
+  "modelos_pronostico":{
+    "directorio_modelos": "artifacts/",
+    "modelo_mensual": "modelo_pronostico_acopio_nacional.rds",
+    "modelo_promedio_diario": "modelo_pronostico_acopio_promedio_diario.rds"
+  }
+}
